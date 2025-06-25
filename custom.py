@@ -1,68 +1,57 @@
 import os
-# os.environ["USE_MECAB"] = "0"
-import sys
-import os
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import torch
 from openvoice import se_extractor
 from openvoice.api import ToneColorConverter
 from melo.api import TTS
 
-# === CONFIGURATION ===
-CHECKPOINTS_DIR = 'checkpoints'  # Make sure this exists with /converter and /base_speakers
-CONVERTER_CKPT_DIR = os.path.join(CHECKPOINTS_DIR, 'converter')
-BASE_SPEAKER_DIR = os.path.join(CHECKPOINTS_DIR, 'base_speakers', 'ses')
-REFERENCE_VOICE = 'resources/007.mp3'  # Put your .mp3 here
-OUTPUT_DIR = 'output'
-TEXT = """Hello. I am very happy to be part of this demonstration today.
-          Actually, voice cloning technology has come a very long way. It is truly surprising — how just a few seconds of voice recording can reproduce someone’s voice with such accuracy.
 
-          In this test, what you are hearing is not my real voice. This is an artificial voice, created using advanced AI models. Isn’t that very interesting?
+class OpenVoiceTTS:
+    def __init__(self):
+        self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        print(f"🖥️ Using device: {self.device.upper()}")
 
-          People are using this technology for many purposes — storytelling, dubbing, education, and even accessibility. So the uses are quite wide, you see.
+        # === Initialize tone converter ===
+        self.converter = ToneColorConverter("checkpoints/converter/config.json", device=self.device)
+        self.converter.load_ckpt("checkpoints/converter/checkpoint.pth")
 
-          I hope this sample gives you a clear idea of how natural and expressive these AI voices can sound.
+        # === Setup TTS model ===
+        self.tts = TTS(language="EN", device=self.device)
+        self.speaker_key = "EN-Default"
+        self.speaker_id = self.tts.hps.data.spk2id[self.speaker_key]
 
-          Thank you so much for listening. Kindly continue exploring this technology. It is very promising!"""
-LANGUAGE = "EN"
-SPEAKER_KEY = "EN-Default"  # Must match pth file in /ses/
+        speaker_path = f"checkpoints/base_speakers/ses/{self.speaker_key}.pth"
+        self.source_se = torch.load(speaker_path, map_location=self.device)
 
-# === SETUP ===s
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    def synthesize(self, text: str, output_path: str, ref_audio: str) -> str:
+        if not text.strip():
+            raise ValueError("❌ No text provided for synthesis!")
 
-# === LOAD TONE COLOR CONVERTER ===
-tone_color_converter = ToneColorConverter(os.path.join(CONVERTER_CKPT_DIR, 'config.json'), device=device)
-tone_color_converter.load_ckpt(os.path.join(CONVERTER_CKPT_DIR, 'checkpoint.pth'))
+        if not ref_audio or not os.path.isfile(ref_audio):
+            raise FileNotFoundError(f"❌ Reference audio not found: {ref_audio}")
 
-# === EXTRACT TARGET SPEAKER EMBEDDING ===
-print("🔍 Extracting speaker style from reference voice...")
-target_se, _ = se_extractor.get_se(REFERENCE_VOICE, tone_color_converter, vad=True)
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        temp_path = output_path.replace(".wav", "_tmp.wav")
 
-# === LOAD BASE SPEAKER AND SYNTHESIZE SPEECH ===
-print(f"🎙️ Synthesizing base audio with voice style: {SPEAKER_KEY}")
-tts_model = TTS(language=LANGUAGE, device=device)
-speaker_ids = tts_model.hps.data.spk2id
+        # Generate base audio
+        self.tts.tts_to_file(text, self.speaker_id, temp_path)
 
-if SPEAKER_KEY not in speaker_ids:
-    raise ValueError(f"Speaker '{SPEAKER_KEY}' not found in speaker IDs. Check your .pth filenames.")
+        # Extract target voice style
+        target_se, _ = se_extractor.get_se(ref_audio, self.converter, vad=True)
 
-speaker_id = speaker_ids[SPEAKER_KEY]
-source_se_path = os.path.join(BASE_SPEAKER_DIR, f"{SPEAKER_KEY}.pth")
-source_se = torch.load(source_se_path, map_location=device)
+        # Apply tone/style conversion
+        self.converter.convert(
+            audio_src_path=temp_path,
+            src_se=self.source_se,
+            tgt_se=target_se,
+            output_path=output_path,
+            message="@MyShell"
+        )
+        return output_path
 
-# === SYNTHESIZE BASE AUDIO ===
-temp_wav = os.path.join(OUTPUT_DIR, "tmp.wav")
-tts_model.tts_to_file(TEXT, speaker_id, temp_wav, speed=1.0)
 
-# === CONVERT VOICE STYLE ===
-final_output = os.path.join(OUTPUT_DIR, f"cloned_EN_Default.wav")
-tone_color_converter.convert(
-    audio_src_path=temp_wav,
-    src_se=source_se,
-    tgt_se=target_se,
-    output_path=final_output,
-    message="@MyShell"
-)
+# === Test block to run standalone ===
+if __name__ == "__main__":
+    print("🚀 Starting OpenVoice synthesis test...")
 
-print(f"✅ Voice cloning complete! Output saved to: {final_output}")
+# Make class importable when using `from custom import OpenVoiceTTS`
+__all__ = ["OpenVoiceTTS"]

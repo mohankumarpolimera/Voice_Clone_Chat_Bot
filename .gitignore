@@ -12,7 +12,7 @@ examples*
 build
 *.egg-info/
 *.zip
-venv/
+ovenv/
 resources/
 demo/
 docs/
